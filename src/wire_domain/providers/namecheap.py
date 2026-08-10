@@ -77,10 +77,24 @@ class NamecheapProvider:
         return list(result.get("Nameservers") or [])
 
     def set_nameservers(self, domain: str, nameservers: list[str]) -> None:
+        # WORKAROUND (upstream bug): namecheap-python 0.2.x's
+        # domains.dns.set_custom sends the nameservers as indexed
+        # "Nameserver1"/"Nameserver2" params, but Namecheap's setCustom API
+        # expects a single comma-separated "Nameservers" param. The library's
+        # method therefore always fails with "Parameter Nameservers is Missing".
+        # Issue the command directly with the correct parameter shape.
+        import tldextract
+
+        extracted = tldextract.extract(domain)
+        sld, tld = extracted.domain, extracted.suffix
+        if not sld or not tld:
+            raise NamecheapError(
+                f"Could not parse '{domain}' into a second-level domain and TLD."
+            )
         try:
-            result = self.client.domains.dns.set_custom(domain, nameservers)
+            self.client._make_request(
+                "namecheap.domains.dns.setCustom",
+                {"SLD": sld, "TLD": tld, "Nameservers": ",".join(nameservers)},
+            )
         except Exception as exc:  # noqa: BLE001
             raise _namecheap_error(domain, "set nameservers", exc) from exc
-        if not result.get("IsSuccess"):
-            warning = result.get("Warnings") or "unknown error"
-            raise NamecheapError(f"Namecheap rejected nameserver update for {domain}: {warning}")

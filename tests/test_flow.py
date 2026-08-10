@@ -315,6 +315,7 @@ def test_render_next_steps_lists_verification_commands():
 
     report = WireReport(domain="example.com")
     report.add(StepResult("namecheap-nameservers", "updated", "set -> [ns1, ns2]"))
+    report.add(StepResult("cloudflare-record:A:@", "created", "76.76.21.21"))
     with console.capture() as cap:
         render_next_steps(report, "my-project")
     out = cap.get()
@@ -322,3 +323,5 @@ def test_render_next_steps_lists_verification_commands():
     assert "vercel domains inspect example.com" in out
     assert "wire-domain status example.com --project my-project" in out
     assert "propagat" in out.lower()  # NS updated -> propagation called out
+    assert "🅰" not in out            # step name ':A:' must not become an emoji here either
+    assert "cloudflare-record:A:@" in out
