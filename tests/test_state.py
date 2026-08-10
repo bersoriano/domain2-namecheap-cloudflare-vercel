@@ -38,3 +38,21 @@ def test_default_state_dir_shape():
     d = default_state_dir()
     assert d.name == "state"
     assert d.parent.name == ".wire-domain"
+
+
+def test_save_does_not_mutate_caller(tmp_path):
+    store = StateStore(tmp_path)
+    state = DomainState(domain="example.com")
+    assert state.updated_at is None
+    store.save(state)
+    assert state.updated_at is None  # caller's object untouched
+    # but the persisted copy has a timestamp
+    assert store.load("example.com").updated_at is not None
+
+
+def test_load_corrupt_returns_default(tmp_path):
+    store = StateStore(tmp_path)
+    (tmp_path / "example.com.json").write_text("not json {{{")
+    state = store.load("example.com")
+    assert state.domain == "example.com"
+    assert state.zone_id is None

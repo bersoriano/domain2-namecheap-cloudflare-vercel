@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,5 +41,5 @@ class StateStore:
 
     def save(self, state: DomainState) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        state.updated_at = datetime.now(timezone.utc).isoformat()
-        self.path_for(state.domain).write_text(json.dumps(asdict(state), indent=2))
+        to_write = replace(state, updated_at=datetime.now(timezone.utc).isoformat())
+        self.path_for(state.domain).write_text(json.dumps(asdict(to_write), indent=2))
