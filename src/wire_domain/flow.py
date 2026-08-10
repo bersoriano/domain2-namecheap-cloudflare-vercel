@@ -63,17 +63,11 @@ class Orchestrator:
         report = WireReport(domain=plan.domain)
         state = self.state_store.load(plan.domain)
         try:
-            zone = self.cloudflare.get_or_create_zone(plan.domain)
-            report.add(StepResult(
-                name="cloudflare-zone",
-                status="skipped" if not zone.created else "created",
-                detail=f"zone {zone.id} ({zone.status})",
-            ))
-            state.zone_id = zone.id
-            state.cloudflare_nameservers = zone.name_servers
-            if not plan.dry_run:
-                state.last_completed_step = "cloudflare-zone"
-                self.state_store.save(state)
+            zone = self._acquire_zone(plan, report, state)
+            if zone is None:
+                # dry-run with no existing zone: a preview must not create it,
+                # so the full plan has already been recorded as pending.
+                return report
 
             current_ns = self.namecheap.get_nameservers(plan.domain)
             if nameservers_equal(current_ns, zone.name_servers):
@@ -111,8 +105,51 @@ class Orchestrator:
                 state.last_completed_step = "vercel"
                 self.state_store.save(state)
         except WireError as exc:
-            report.add(StepResult(_failed_step_name(exc), "failed", str(exc)))
+            report.add(StepResult(_failed_step_name(exc), "failed", _detail_with_cause(exc)))
         return report
+
+    def _acquire_zone(self, plan: WirePlan, report: WireReport, state):
+        """Resolve the Cloudflare zone for the domain.
+
+        In a dry run this is READ-ONLY: it looks the zone up and never creates
+        one. If no zone exists yet, it records the whole plan as a pending
+        preview and returns None so the caller stops without mutating anything.
+        In a real run it creates the zone if missing and persists state.
+        """
+        if plan.dry_run:
+            zone = self.cloudflare.get_zone(plan.domain)
+            if zone is None:
+                self._preview_missing_zone(report, plan)
+                return None
+            report.add(StepResult("cloudflare-zone", "skipped", f"zone {zone.id} ({zone.status})"))
+            return zone
+
+        zone = self.cloudflare.get_or_create_zone(plan.domain)
+        report.add(StepResult(
+            name="cloudflare-zone",
+            status="skipped" if not zone.created else "created",
+            detail=f"zone {zone.id} ({zone.status})",
+        ))
+        state.zone_id = zone.id
+        state.cloudflare_nameservers = zone.name_servers
+        state.last_completed_step = "cloudflare-zone"
+        self.state_store.save(state)
+        return zone
+
+    def _preview_missing_zone(self, report: WireReport, plan: WirePlan) -> None:
+        """Record the full plan as pending when a dry run finds no zone yet."""
+        report.add(StepResult("cloudflare-zone", "pending", "would create zone"))
+        report.add(StepResult(
+            "namecheap-nameservers", "pending",
+            "would set to the new zone's Cloudflare nameservers",
+        ))
+        for spec in vercel_record_specs(plan.include_www):
+            report.add(StepResult(
+                f"cloudflare-record:{spec.type}:{spec.name}", "pending",
+                f"would ensure {spec.content}",
+            ))
+        for name in [plan.domain] + ([f"www.{plan.domain}"] if plan.include_www else []):
+            report.add(StepResult(f"vercel-domain:{name}", "pending", f"would add to {plan.project}"))
 
     def status(self, domain: str, project: str, include_www: bool) -> WireReport:
         report = WireReport(domain=domain)
@@ -154,8 +191,17 @@ def _failed_step_name(exc: WireError) -> str:
     return "wire"
 
 
+def _detail_with_cause(exc: WireError) -> str:
+    """Surface the underlying provider error so a failed step is diagnosable
+    from the report itself (not only under --verbose)."""
+    if exc.cause is not None:
+        return f"{exc} — {type(exc.cause).__name__}: {exc.cause}"
+    return str(exc)
+
+
 def render_report(report: WireReport, note: str | None = None) -> None:
     from rich.table import Table
+    from rich.text import Text
 
     table = Table(title=f"wire-domain — {report.domain}")
     table.add_column("Step", style="cyan", no_wrap=True)
@@ -163,7 +209,10 @@ def render_report(report: WireReport, note: str | None = None) -> None:
     table.add_column("Detail", style="white")
     for step in report.steps:
         style = _STATUS_STYLE.get(step.status, "white")
-        table.add_row(step.name, f"[{style}]{step.status}[/{style}]", step.detail)
+        # Step names/details are literal data (e.g. "cloudflare-record:A:@") —
+        # wrap in Text so rich does not interpret ":a:" as an emoji shortcode
+        # or "[...]" as markup. Status keeps its color via a markup string.
+        table.add_row(Text(step.name), f"[{style}]{step.status}[/{style}]", Text(step.detail))
     console.print(table)
     if note:
         console.print(f"[dim]{note}[/dim]")
