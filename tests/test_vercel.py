@@ -95,3 +95,27 @@ def test_auth_failure_raises():
     p = make_provider(handler)
     with pytest.raises(VercelError):
         p.list_domains()
+
+
+def test_team_id_in_add_domain_post():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen[request.method] = request.url.params.get("teamId")
+        if request.method == "GET":
+            return httpx.Response(200, json={"domains": []})
+        return httpx.Response(200, json={"name": "example.com"})
+
+    p = make_provider(handler, team_id="team_x")
+    assert p.add_domain("example.com") == "created"
+    assert seen["GET"] == "team_x"
+    assert seen["POST"] == "team_x"
+
+
+def test_no_team_id_in_query_when_unset():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("teamId") is None
+        return httpx.Response(200, json={"domains": []})
+
+    p = make_provider(handler)  # team_id defaults to None
+    assert p.list_domains() == []
