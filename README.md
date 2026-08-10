@@ -30,11 +30,13 @@ flowchart LR
 - [Why](#why)
 - [How it works](#how-it-works)
 - [Install](#install)
-- [Configure](#configure)
+- [Configure](#configure) · [Getting your credentials](#getting-your-credentials-the-parts-that-bite)
 - [Usage](#usage)
+- [Walkthrough: wiring a domain end-to-end](#walkthrough-wiring-a-domain-end-to-end)
 - [DNS records created](#dns-records-created)
 - [Behavior: idempotency & propagation](#behavior-idempotency--propagation)
 - [Exit codes](#exit-codes)
+- [Troubleshooting: common pitfalls](#troubleshooting-common-pitfalls)
 - [Architecture](#architecture-for-contributors)
 - [Development](#development)
 - [Contributing](#contributing)
@@ -197,7 +199,37 @@ clear message and exit code `1`.
 - **Namecheap:** the domain is already in your account; API access is enabled
   and your public IP is whitelisted (`NAMECHEAP_CLIENT_IP`).
 - **Cloudflare:** an API token scoped to **Zone:Edit** and **DNS:Edit**.
-- **Vercel:** a token and a target project.
+- **Vercel:** a token scoped to the account/team that owns the project.
+
+### Getting your credentials (the parts that bite)
+
+These three details cause almost every first-run failure — get them right up front:
+
+**Cloudflare token — must be able to _create_ zones, not just edit DNS.**
+The popular *"Edit zone DNS"* template only grants `DNS:Edit` on existing zones,
+so `wire-domain` can't create the zone. Create a token
+(**My Profile → API Tokens → Create Token → Custom**) with:
+- **Zone → Zone → Edit** (allows creating zones)
+- **Zone → DNS → Edit**
+- **Account Resources:** include the account that will hold the zone
+
+**Namecheap — enable API access _and_ whitelist your IP.**
+- Enable API access at **Profile → Tools → Business & Dev Tools → API Access**.
+  (Namecheap only grants API access to accounts with 20+ domains, 20+ orders, or
+  a ≥ $50 balance.)
+- On that same page, add your **current public IP** to **Whitelisted IPs**, and
+  set `NAMECHEAP_CLIENT_IP` to the same value. Find your IP with
+  `curl -s https://api.ipify.org`. Whitelist changes take a few minutes to apply.
+
+**Vercel — the token must be scoped to the team that owns the project.**
+A Vercel token is tied to **one** scope: your personal account **or** one team —
+there is no "all teams" token.
+- Team project: create the token scoped to that team
+  (**Account Settings → Tokens**, pick the team as the scope) and set
+  `VERCEL_TEAM_ID` to that team's ID (**Team → Settings → General → Team ID**).
+- Personal project: use a personal-scoped token and leave `VERCEL_TEAM_ID` unset.
+- The project value is the **slug** from the dashboard URL
+  (`vercel.com/<team>/<project>` → use `<project>`).
 
 ---
 
@@ -206,13 +238,14 @@ clear message and exit code `1`.
 ### Wire a domain
 
 ```bash
-# Full wire (shows the plan, then asks for confirmation)
+# Full wire — prints the plan, then asks you to confirm the nameserver change
+# (showing the exact current -> new nameservers) before it touches Namecheap
 uv run wire-domain wire example.com --project my-project
 
-# Preview everything without changing anything
+# Preview everything without changing anything (fully read-only)
 uv run wire-domain wire example.com --project my-project --dry-run
 
-# Non-interactive (skip the confirmation prompt)
+# Non-interactive (skip the nameserver confirmation)
 uv run wire-domain wire example.com --project my-project --yes
 
 # Apex only, no www
@@ -242,6 +275,64 @@ uv run wire-domain status example.com --project my-project
 
 **Flags for `status`:** `--project`, `--www` / `--no-www`, `--state-dir`,
 `--verbose` (same meanings as above; `status` never writes).
+
+---
+
+## Walkthrough: wiring a domain end-to-end
+
+A real run, step by step. Replace `example.com` / `my-project` with yours.
+
+**1. Preview first — this changes nothing.**
+
+```bash
+uv run wire-domain wire example.com --project my-project --dry-run
+```
+
+You'll see the masked config table, the DNS records that will be created, and a
+per-step plan where every step is `pending` or `skipped`. If a credential is
+wrong, you find out here — safely. Fix anything flagged before continuing.
+
+**2. Run it for real.**
+
+```bash
+uv run wire-domain wire example.com --project my-project
+```
+
+It reuses/creates the Cloudflare zone, then **pauses to confirm the nameserver
+change**, showing the exact values:
+
+```
+About to change nameservers for example.com:
+  current: ['dns1.registrar-servers.com', 'dns2.registrar-servers.com']
+  new:     ['nina.ns.cloudflare.com', 'tanner.ns.cloudflare.com']
+Change nameservers now? [y/N]:
+```
+
+Answer `y`. It then sets the nameservers, ensures the DNS records, and attaches
+the domain (+ `www`) to Vercel, and prints a **Next steps** panel with the exact
+verification commands. (Use `--yes` to skip the prompt in automation.)
+
+**3. Watch propagation with `status` (read-only, run anytime).**
+
+```bash
+uv run wire-domain status example.com --project my-project
+```
+
+Right after wiring, the Cloudflare zone shows `pending`. Once nameservers
+propagate (minutes to 48h), it flips to `active`.
+
+**4. Verify it's live.**
+
+```bash
+dig +short NS example.com            # -> the two Cloudflare nameservers
+dig +short example.com               # -> 76.76.21.21
+dig +short www.example.com           # -> cname.vercel-dns.com ...
+curl -sS -o /dev/null -w '%{http_code}\n' https://example.com   # -> 200 once a deployment is assigned
+```
+
+**Re-running is always safe.** If a step fails (say, a wrong Vercel token),
+fix it and run the same command again — the finished steps report `skipped` and
+only the missing one runs.
 
 ---
 
@@ -280,6 +371,81 @@ propagate. The Cloudflare zone stays **pending** until it completes.
 | `0` | Success |
 | `1` | Configuration error (missing/invalid env vars, or no Vercel project resolved) |
 | `2` | A step failed (provider/API error) |
+
+---
+
+## Troubleshooting: common pitfalls
+
+`wire-domain` turns each of these into an actionable error, but here's the full
+context and the exact fix. Every case is safe to re-run after fixing.
+
+### Cloudflare: `Failed to create zone` / "already exists" / auth error
+
+- **Token can't create zones.** The *"Edit zone DNS"* template only grants
+  `DNS:Edit`. Give the token **Zone → Zone → Edit** (plus **DNS → Edit**) with
+  the right account in **Account Resources**. See
+  [Getting your credentials](#getting-your-credentials-the-parts-that-bite).
+- **Zone already exists under another account.** Cloudflare returns code `1061`.
+  The domain is already a zone in a *different* Cloudflare account. Remove it
+  there, or run with that account's token and `CLOUDFLARE_ACCOUNT_ID`.
+
+### Namecheap: `Invalid request IP` (error 1011150)
+
+Your calling IP isn't whitelisted. Add your **current public IP**
+(`curl -s https://api.ipify.org`) to **Profile → Tools → API Access →
+Whitelisted IPs**, and make sure `NAMECHEAP_CLIENT_IP` matches it. Whitelist
+changes take a few minutes. Note your IP can change (new network, VPN,
+dynamic ISP) — update both places when it does.
+
+### Namecheap: domain "not in this account"
+
+`wire-domain` only manages domains you already own. If Namecheap says the domain
+isn't in your account, confirm it's registered under this Namecheap login (the
+tool does **not** register domains).
+
+### Namecheap: nothing happens / API access won't enable
+
+Namecheap only grants API access to accounts with **20+ domains, 20+ orders, or
+a ≥ $50 balance**. If the API Access toggle won't turn on, that's why.
+
+### Vercel: `project ... was not found (404)`
+
+Almost always a **scope mismatch**, not a typo:
+
+- The token must be **scoped to the team that owns the project**. A token for
+  your personal account cannot see a team's projects (you'll get
+  `403 team_unauthorized` on that team).
+- `VERCEL_TEAM_ID` must be the **same team** the token is scoped to.
+- The `--project` value is the **slug** from the dashboard URL
+  `vercel.com/<team>/<project>`.
+
+Quick check — which account your token belongs to and whether it can see the team:
+
+```bash
+curl -s https://api.vercel.com/v2/user \
+  -H "Authorization: Bearer $VERCEL_TOKEN" | jq '.user.username, .user.email'
+curl -s "https://api.vercel.com/v9/projects?teamId=$VERCEL_TEAM_ID" \
+  -H "Authorization: Bearer $VERCEL_TOKEN" | jq '.projects[].name'
+```
+
+### Vercel: domain "already attached to a different project"
+
+Vercel returns `409`. The domain is bound to another Vercel project. Detach it
+there (dashboard or `vercel domains rm`) before wiring it here.
+
+### "It wired but the site isn't up yet"
+
+Two independent clocks: **nameserver propagation** (registrar → Cloudflare, up to
+48h; the zone stays `pending` until done) and **assigning a production
+deployment** in Vercel. `dig +short <domain>` returning `76.76.21.21` means DNS
+is done; a `200` over HTTPS also needs a deployment assigned to the domain in
+Vercel.
+
+### Tip: use `status` and `--dry-run` liberally
+
+`status` and `--dry-run` are read-only and use your real credentials, so they're
+the fastest way to validate config and see current state without changing
+anything.
 
 ---
 
