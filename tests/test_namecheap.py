@@ -32,8 +32,16 @@ class FakeDns:
 
 
 class FakeClient:
-    def __init__(self, dns):
+    def __init__(self, dns, make_request=None):
         self.domains = type("D", (), {"dns": dns})()
+        self._mr = make_request
+        self.make_request_calls = []
+
+    def _make_request(self, command, params=None, error_codes=None, context=None):
+        self.make_request_calls.append((command, params))
+        if self._mr is not None:
+            return self._mr(command, params)
+        return {"Status": "OK"}
 
 
 def test_nameservers_equal_normalizes():
@@ -50,23 +58,40 @@ def test_get_nameservers():
     ]
 
 
-def test_set_nameservers_success():
-    dns = FakeDns(ns=[], set_result={"IsSuccess": True})
-    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+def test_set_nameservers_sends_comma_separated_nameservers():
+    # Regression guard for the upstream library bug: Namecheap's setCustom needs
+    # a single comma-separated `Nameservers` param (not indexed Nameserver1/2),
+    # and the domain split into SLD/TLD.
+    client = FakeClient(FakeDns(ns=[]))
+    p = NamecheapProvider(make_settings(), client=client)
     p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
-    assert dns.set_calls == [("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])]
+    assert client.make_request_calls == [
+        (
+            "namecheap.domains.dns.setCustom",
+            {
+                "SLD": "example",
+                "TLD": "com",
+                "Nameservers": "ns1.cloudflare.com,ns2.cloudflare.com",
+            },
+        )
+    ]
 
 
-def test_set_nameservers_unsuccessful_raises():
-    dns = FakeDns(ns=[], set_result={"IsSuccess": False, "Warnings": "nope"})
-    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
-    with pytest.raises(NamecheapError):
-        p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
+def test_set_nameservers_splits_multi_level_tld():
+    client = FakeClient(FakeDns(ns=[]))
+    p = NamecheapProvider(make_settings(), client=client)
+    p.set_nameservers("example.co.uk", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
+    _, params = client.make_request_calls[0]
+    assert params["SLD"] == "example"
+    assert params["TLD"] == "co.uk"
 
 
 def test_set_nameservers_exception_wrapped():
-    dns = FakeDns(ns=[], raise_on_set=True)
-    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    def boom(command, params):
+        raise RuntimeError("api down")
+
+    client = FakeClient(FakeDns(ns=[]), make_request=boom)
+    p = NamecheapProvider(make_settings(), client=client)
     with pytest.raises(NamecheapError):
         p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
 
@@ -84,8 +109,11 @@ class RaisingDns:
 
 
 def test_set_nameservers_ip_not_whitelisted_is_actionable():
-    dns = RaisingDns(RuntimeError("API Error: 1011150: Invalid request IP: 204.239.251.6"))
-    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    def boom(command, params):
+        raise RuntimeError("API Error: 1011150: Invalid request IP: 204.239.251.6")
+
+    client = FakeClient(FakeDns(ns=[]), make_request=boom)
+    p = NamecheapProvider(make_settings(), client=client)
     with pytest.raises(NamecheapError) as exc:
         p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
     msg = str(exc.value)
@@ -105,8 +133,11 @@ def test_read_nameservers_domain_not_in_account_is_actionable():
 
 
 def test_generic_namecheap_error_falls_back():
-    dns = RaisingDns(RuntimeError("some unexpected failure"))
-    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    def boom(command, params):
+        raise RuntimeError("some unexpected failure")
+
+    client = FakeClient(FakeDns(ns=[]), make_request=boom)
+    p = NamecheapProvider(make_settings(), client=client)
     with pytest.raises(NamecheapError) as exc:
         p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
     assert "Failed to set nameservers for example.com" in str(exc.value)

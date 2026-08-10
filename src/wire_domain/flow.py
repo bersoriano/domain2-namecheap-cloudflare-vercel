@@ -232,7 +232,15 @@ def render_report(report: WireReport, note: str | None = None) -> None:
 
 def render_next_steps(report: WireReport, project: str) -> None:
     """After a real run, summarize what changed, what is still propagating, and
-    the exact commands to verify the result."""
+    the exact commands to verify the result.
+
+    Built as a rich.Text (not a markup string) so literal data like step names
+    ("cloudflare-record:A:@") and the domain are never interpreted as emoji
+    shortcodes or markup.
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+
     domain = report.domain
     changed = [s for s in report.steps if s.status in ("created", "updated")]
     failed = [s for s in report.steps if s.status == "failed"]
@@ -240,42 +248,40 @@ def render_next_steps(report: WireReport, project: str) -> None:
         s.name == "namecheap-nameservers" and s.status == "updated" for s in report.steps
     )
 
-    lines: list[str] = []
-
+    body = Text()
+    body.append("What changed\n", style="bold")
     if changed:
-        lines.append("[bold]What changed[/bold]")
         for s in changed:
-            lines.append(f"  [green]{s.status}[/green] {s.name}")
+            body.append("  ")
+            body.append(s.status, style="green")
+            body.append(f" {s.name}\n")  # literal name, no emoji/markup interpretation
     else:
-        lines.append("[bold]What changed[/bold]")
-        lines.append("  [dim]nothing - everything was already in the desired state[/dim]")
+        body.append("  nothing - everything was already in the desired state\n", style="dim")
 
     if ns_changed:
-        lines.append("")
-        lines.append("[bold]Still propagating[/bold]")
-        lines.append(
-            "  Nameservers were just changed. Propagation can take minutes to 48h; "
-            "the Cloudflare zone stays [cyan]pending[/cyan] and TLS/serving on Vercel "
-            "won't be active until it completes."
+        body.append("\nStill propagating\n", style="bold")
+        body.append(
+            "  Nameservers were just changed. Propagation can take minutes to 48h; the "
+            "Cloudflare zone stays pending and TLS/serving on Vercel won't be active "
+            "until it completes.\n"
         )
 
     if failed:
-        lines.append("")
-        lines.append("[bold red]Some steps failed[/bold red] - re-run after fixing the errors above (the flow is safe to re-run).")
+        body.append("\n")
+        body.append("Some steps failed", style="bold red")
+        body.append(" - re-run after fixing the errors above (the flow is safe to re-run).\n")
 
-    lines.append("")
-    lines.append("[bold]How to verify[/bold]")
-    lines.append("  [dim]# nameservers now point at Cloudflare[/dim]")
-    lines.append(f"  dig +short NS {domain}")
-    lines.append("  [dim]# apex resolves to Vercel[/dim]")
-    lines.append(f"  dig +short {domain}")
-    lines.append("  [dim]# www CNAME[/dim]")
-    lines.append(f"  dig +short www.{domain}")
-    lines.append("  [dim]# Vercel-side domain status[/dim]")
-    lines.append(f"  vercel domains inspect {domain}")
-    lines.append("  [dim]# re-check everything through this tool[/dim]")
-    lines.append(f"  wire-domain status {domain} --project {project}")
+    body.append("\nHow to verify\n", style="bold")
 
-    from rich.panel import Panel
+    def verify(comment: str, command: str) -> None:
+        body.append(f"  # {comment}\n", style="dim")
+        body.append(f"  {command}\n")
 
-    console.print(Panel("\n".join(lines), title=f"Next steps - {domain}", expand=False))
+    verify("nameservers now point at Cloudflare", f"dig +short NS {domain}")
+    verify("apex resolves to Vercel", f"dig +short {domain}")
+    verify("www CNAME", f"dig +short www.{domain}")
+    verify("Vercel-side domain status", f"vercel domains inspect {domain}")
+    verify("re-check everything through this tool",
+           f"wire-domain status {domain} --project {project}")
+
+    console.print(Panel(body, title=f"Next steps - {domain}", expand=False))
