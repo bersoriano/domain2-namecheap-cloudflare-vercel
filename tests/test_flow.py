@@ -61,6 +61,22 @@ class FakeVercel:
         pass
 
 
+class FakeCloudflareWithZone(FakeCloudflare):
+    def __init__(self, zone=None):
+        super().__init__()
+        self._zone = zone
+    def get_zone(self, domain):
+        return self._zone
+
+
+class FakeVercelWithList(FakeVercel):
+    def __init__(self, attached=None):
+        super().__init__()
+        self._attached = attached or []
+    def list_domains(self):
+        return list(self._attached)
+
+
 def build(tmp_path, namecheap, cloudflare, vercel):
     return Orchestrator(
         settings=make_settings(),
@@ -134,3 +150,33 @@ def test_wire_failure_stops_and_marks_failed(tmp_path):
     assert report.steps[0].status == "failed"
     # flow stopped: only the zone step recorded
     assert len(report.steps) == 1
+
+
+def test_status_reports_pending_when_zone_absent(tmp_path):
+    orch = Orchestrator(
+        settings=make_settings(), state_store=StateStore(tmp_path),
+        namecheap=FakeNamecheap(current_ns=[]),
+        cloudflare=FakeCloudflareWithZone(zone=None),
+        vercel_factory=lambda project: FakeVercelWithList([]),
+    )
+    report = orch.status("example.com", "proj", include_www=True)
+    zone_step = next(s for s in report.steps if s.name == "cloudflare-zone")
+    assert zone_step.status == "pending"
+    # zone absent -> status returns early, no vercel/ns steps
+    assert len(report.steps) == 1
+
+
+def test_status_reports_attached_and_ns_matching(tmp_path):
+    zone = FakeZoneInfo(created=False)  # name_servers = ns1/ns2.cloudflare.com, status "pending"
+    orch = Orchestrator(
+        settings=make_settings(), state_store=StateStore(tmp_path),
+        namecheap=FakeNamecheap(current_ns=["ns1.cloudflare.com", "ns2.cloudflare.com"]),
+        cloudflare=FakeCloudflareWithZone(zone=zone),
+        vercel_factory=lambda project: FakeVercelWithList(["example.com", "www.example.com"]),
+    )
+    report = orch.status("example.com", "proj", include_www=True)
+    names = {s.name: s.status for s in report.steps}
+    assert names["cloudflare-zone"] == "skipped"          # zone exists
+    assert names["namecheap-nameservers"] == "skipped"    # NS already match
+    assert names["vercel-domain:example.com"] == "skipped"      # attached
+    assert names["vercel-domain:www.example.com"] == "skipped"  # attached

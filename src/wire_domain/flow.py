@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 from wire_domain.config import Settings
 from wire_domain.console import console
-from wire_domain.errors import WireError
+from wire_domain.errors import (
+    CloudflareProviderError,
+    NamecheapError,
+    VercelError,
+    WireError,
+)
 from wire_domain.models import RecordSpec, StepResult, WireReport
 from wire_domain.providers.cloudflare import CloudflareProvider
 from wire_domain.providers.namecheap import NamecheapProvider, nameservers_equal
 from wire_domain.providers.vercel import VercelProvider
 from wire_domain.state import StateStore
 
-_APEX = RecordSpec(type="A", name="@", content="76.76.21.21", proxied=False)
-_WWW = RecordSpec(type="CNAME", name="www", content="cname.vercel-dns.com", proxied=False)
+_APEX = RecordSpec(type="A", name="@", content="76.76.21.21", proxied=False, ttl=1)
+_WWW = RecordSpec(type="CNAME", name="www", content="cname.vercel-dns.com", proxied=False, ttl=1)
 
 _STATUS_STYLE = {
     "created": "green",
@@ -76,8 +82,6 @@ class Orchestrator:
                 report.add(StepResult("namecheap-nameservers", "pending", f"would set -> {zone.name_servers}"))
             else:
                 self.namecheap.set_nameservers(plan.domain, zone.name_servers)
-                from datetime import datetime, timezone
-
                 state.nameservers_changed_at = datetime.now(timezone.utc).isoformat()
                 state.last_completed_step = "namecheap-nameservers"
                 self.state_store.save(state)
@@ -136,27 +140,11 @@ class Orchestrator:
         return report
 
     def _read_zone(self, domain: str):
-        # Uses provider list without creating. Returns ZoneInfo-like or None.
-        try:
-            zones = [z for z in self.cloudflare.client.zones.list(name=domain) if z.name == domain]
-        except Exception as exc:  # noqa: BLE001
-            raise WireError(f"Failed to read zone for {domain}", cause=exc) from exc
-        if not zones:
-            return None
-        z = zones[0]
-        from wire_domain.providers.cloudflare import ZoneInfo
-
-        return ZoneInfo(id=z.id, name=z.name, name_servers=list(getattr(z, "name_servers", None) or []),
-                        status=getattr(z, "status", "unknown"), created=False)
+        # Read-only: never creates a zone.
+        return self.cloudflare.get_zone(domain)
 
 
 def _failed_step_name(exc: WireError) -> str:
-    from wire_domain.errors import (
-        CloudflareProviderError,
-        NamecheapError,
-        VercelError,
-    )
-
     if isinstance(exc, NamecheapError):
         return "namecheap-nameservers"
     if isinstance(exc, CloudflareProviderError):

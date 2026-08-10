@@ -74,6 +74,23 @@ class CloudflareProvider:
             created=created,
         )
 
+    def get_zone(self, domain: str) -> ZoneInfo | None:
+        """Read-only: return the zone for domain if it exists, else None. Never creates."""
+        try:
+            matches = [z for z in self.client.zones.list(name=domain) if z.name == domain]
+        except Exception as exc:  # noqa: BLE001
+            raise CloudflareProviderError(f"Failed to read zone for {domain}", cause=exc) from exc
+        if not matches:
+            return None
+        zone = matches[0]
+        return ZoneInfo(
+            id=zone.id,
+            name=zone.name,
+            name_servers=list(getattr(zone, "name_servers", None) or []),
+            status=getattr(zone, "status", "unknown"),
+            created=False,
+        )
+
     def ensure_record(self, zone_id: str, zone_name: str, spec: RecordSpec) -> StepStatus:
         fqdn = self._fqdn(zone_name, spec.name)
         try:
