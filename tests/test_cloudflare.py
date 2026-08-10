@@ -147,3 +147,42 @@ def test_zone_create_zero_accounts_raises():
     p = CloudflareProvider(make_settings(), client=cf)  # no explicit account id
     with pytest.raises(CloudflareProviderError):
         p.get_or_create_zone("example.com")
+
+
+class FailingCreateZones(FakeZones):
+    """Zones API that lists nothing and raises a given exception on create."""
+    def __init__(self, exc):
+        super().__init__(existing=[])
+        self._exc = exc
+
+    def create(self, account=None, name=None, type=None):
+        raise self._exc
+
+
+def test_zone_create_already_exists_elsewhere_is_actionable():
+    cf = FakeCF(FailingCreateZones(RuntimeError("Zone already exists (code 1061)")), FakeRecords())
+    p = CloudflareProvider(make_settings(account_id="acct-explicit"), client=cf)
+    with pytest.raises(CloudflareProviderError) as exc:
+        p.get_or_create_zone("example.com")
+    msg = str(exc.value)
+    assert "already exists" in msg.lower()
+    assert "different Cloudflare account" in msg
+    assert exc.value.cause is not None
+
+
+def test_zone_create_permission_error_is_actionable():
+    cf = FakeCF(FailingCreateZones(RuntimeError("Authentication error (9109)")), FakeRecords())
+    p = CloudflareProvider(make_settings(account_id="acct-explicit"), client=cf)
+    with pytest.raises(CloudflareProviderError) as exc:
+        p.get_or_create_zone("example.com")
+    msg = str(exc.value)
+    assert "token" in msg.lower()
+    assert "Zone" in msg  # mentions the required scope
+
+
+def test_zone_create_generic_error_falls_back():
+    cf = FakeCF(FailingCreateZones(RuntimeError("mystery boom")), FakeRecords())
+    p = CloudflareProvider(make_settings(account_id="acct-explicit"), client=cf)
+    with pytest.raises(CloudflareProviderError) as exc:
+        p.get_or_create_zone("example.com")
+    assert "Failed to create zone for example.com" in str(exc.value)

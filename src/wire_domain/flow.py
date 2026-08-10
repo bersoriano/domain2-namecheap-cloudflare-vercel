@@ -52,12 +52,17 @@ class Orchestrator:
         namecheap: NamecheapProvider,
         cloudflare: CloudflareProvider,
         vercel_factory: Callable[[str], VercelProvider],
+        confirm_nameservers: Callable[[str, list[str], list[str]], bool] | None = None,
     ) -> None:
         self.settings = settings
         self.state_store = state_store
         self.namecheap = namecheap
         self.cloudflare = cloudflare
         self.vercel_factory = vercel_factory
+        # Optional gate called right before the (destructive) nameserver change,
+        # with (domain, current_ns, target_ns). Return False to skip the change.
+        # None means proceed without prompting (e.g. --yes or non-interactive).
+        self.confirm_nameservers = confirm_nameservers
 
     def wire(self, plan: WirePlan) -> WireReport:
         report = WireReport(domain=plan.domain)
@@ -74,6 +79,13 @@ class Orchestrator:
                 report.add(StepResult("namecheap-nameservers", "skipped", "already pointing to Cloudflare"))
             elif plan.dry_run:
                 report.add(StepResult("namecheap-nameservers", "pending", f"would set -> {zone.name_servers}"))
+            elif self.confirm_nameservers is not None and not self.confirm_nameservers(
+                plan.domain, current_ns, zone.name_servers
+            ):
+                report.add(StepResult(
+                    "namecheap-nameservers", "skipped",
+                    "declined - nameservers left unchanged",
+                ))
             else:
                 self.namecheap.set_nameservers(plan.domain, zone.name_servers)
                 state.nameservers_changed_at = datetime.now(timezone.utc).isoformat()
@@ -216,3 +228,54 @@ def render_report(report: WireReport, note: str | None = None) -> None:
     console.print(table)
     if note:
         console.print(f"[dim]{note}[/dim]")
+
+
+def render_next_steps(report: WireReport, project: str) -> None:
+    """After a real run, summarize what changed, what is still propagating, and
+    the exact commands to verify the result."""
+    domain = report.domain
+    changed = [s for s in report.steps if s.status in ("created", "updated")]
+    failed = [s for s in report.steps if s.status == "failed"]
+    ns_changed = any(
+        s.name == "namecheap-nameservers" and s.status == "updated" for s in report.steps
+    )
+
+    lines: list[str] = []
+
+    if changed:
+        lines.append("[bold]What changed[/bold]")
+        for s in changed:
+            lines.append(f"  [green]{s.status}[/green] {s.name}")
+    else:
+        lines.append("[bold]What changed[/bold]")
+        lines.append("  [dim]nothing - everything was already in the desired state[/dim]")
+
+    if ns_changed:
+        lines.append("")
+        lines.append("[bold]Still propagating[/bold]")
+        lines.append(
+            "  Nameservers were just changed. Propagation can take minutes to 48h; "
+            "the Cloudflare zone stays [cyan]pending[/cyan] and TLS/serving on Vercel "
+            "won't be active until it completes."
+        )
+
+    if failed:
+        lines.append("")
+        lines.append("[bold red]Some steps failed[/bold red] - re-run after fixing the errors above (the flow is safe to re-run).")
+
+    lines.append("")
+    lines.append("[bold]How to verify[/bold]")
+    lines.append("  [dim]# nameservers now point at Cloudflare[/dim]")
+    lines.append(f"  dig +short NS {domain}")
+    lines.append("  [dim]# apex resolves to Vercel[/dim]")
+    lines.append(f"  dig +short {domain}")
+    lines.append("  [dim]# www CNAME[/dim]")
+    lines.append(f"  dig +short www.{domain}")
+    lines.append("  [dim]# Vercel-side domain status[/dim]")
+    lines.append(f"  vercel domains inspect {domain}")
+    lines.append("  [dim]# re-check everything through this tool[/dim]")
+    lines.append(f"  wire-domain status {domain} --project {project}")
+
+    from rich.panel import Panel
+
+    console.print(Panel("\n".join(lines), title=f"Next steps - {domain}", expand=False))

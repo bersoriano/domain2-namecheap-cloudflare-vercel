@@ -119,3 +119,37 @@ def test_no_team_id_in_query_when_unset():
 
     p = make_provider(handler)  # team_id defaults to None
     assert p.list_domains() == []
+
+
+def test_list_domains_project_not_found_is_actionable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": {"code": "not_found"}})
+
+    p = make_provider(handler, project="missing-proj")
+    with pytest.raises(VercelError) as exc:
+        p.list_domains()
+    msg = str(exc.value)
+    assert "not found" in msg.lower()
+    assert "missing-proj" in msg
+
+
+def test_add_domain_project_not_found_is_actionable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"domains": []})
+        return httpx.Response(404, json={"error": {"code": "not_found"}})
+
+    p = make_provider(handler, project="missing-proj")
+    with pytest.raises(VercelError) as exc:
+        p.add_domain("example.com")
+    assert "not found" in str(exc.value).lower()
+
+
+def test_project_not_found_mentions_team_id_when_unset():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={})
+
+    p = make_provider(handler)  # team_id=None
+    with pytest.raises(VercelError) as exc:
+        p.list_domains()
+    assert "VERCEL_TEAM_ID" in str(exc.value)

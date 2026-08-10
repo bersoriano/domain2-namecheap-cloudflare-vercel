@@ -18,6 +18,30 @@ class ZoneInfo:
     created: bool
 
 
+def _zone_create_error(domain: str, exc: Exception) -> CloudflareProviderError:
+    """Translate a raw Cloudflare zone-create failure into actionable guidance."""
+    text = str(exc)
+    lowered = text.lower()
+
+    if "1061" in text or "already exists" in lowered:
+        return CloudflareProviderError(
+            f"A Cloudflare zone for '{domain}' already exists - most likely under a "
+            "different Cloudflare account than this API token. Remove the zone from "
+            "that account, or run wire-domain with that account's token and its "
+            "CLOUDFLARE_ACCOUNT_ID.",
+            cause=exc,
+        )
+    if any(code in text for code in ("9109", "1000", "10000")) or "authentication" in lowered or "permission" in lowered or "403" in text:
+        return CloudflareProviderError(
+            f"Cloudflare rejected the request while creating the zone for '{domain}' "
+            "(authentication/permission). The API token needs Zone -> Zone -> Edit (to "
+            "create zones) plus Zone -> DNS -> Edit. Check CLOUDFLARE_API_TOKEN and its "
+            "scopes.",
+            cause=exc,
+        )
+    return CloudflareProviderError(f"Failed to create zone for {domain}", cause=exc)
+
+
 class CloudflareProvider:
     def __init__(self, settings: Settings, client: object | None = None) -> None:
         self.settings = settings
@@ -63,7 +87,7 @@ class CloudflareProvider:
                     account={"id": account_id}, name=domain, type="full"
                 )
             except Exception as exc:  # noqa: BLE001
-                raise CloudflareProviderError(f"Failed to create zone for {domain}", cause=exc) from exc
+                raise _zone_create_error(domain, exc) from exc
             created = True
 
         return ZoneInfo(
