@@ -95,10 +95,12 @@ provider for current state before mutating.
    zone exists, reuse its `id` and read its assigned nameservers. Otherwise
    create the zone. Output: `zone_id`, `cloudflare_nameservers`, `zone_status`.
 
-2. **Namecheap — set nameservers.** Split the domain into SLD + TLD. Read
-   current nameservers. If they already equal the Cloudflare set, skip.
-   Otherwise call set-custom-nameservers with the Cloudflare nameservers and
-   record the change timestamp (starts the propagation clock).
+2. **Namecheap — set nameservers.** Read current nameservers via
+   `domains.dns.get_list(domain)`. If they already equal the Cloudflare set
+   (case-insensitive, order-independent), skip. Otherwise call
+   `domains.dns.set_custom(domain, cloudflare_nameservers)` and record the
+   change timestamp (starts the propagation clock). The library accepts the
+   full domain name; no manual SLD/TLD split is required.
 
 3. **Cloudflare — ensure DNS records.** For each desired record, list existing
    records of that type/name:
@@ -145,6 +147,7 @@ code `1` and a clear message before any provider is contacted.
 | `NAMECHEAP_CLIENT_IP` | yes | Whitelisted client IP for the Namecheap API. |
 | `NAMECHEAP_SANDBOX` | no (default `false`) | Use the Namecheap sandbox endpoint. |
 | `CLOUDFLARE_API_TOKEN` | yes | Scoped token with Zone:Edit + DNS:Edit. |
+| `CLOUDFLARE_ACCOUNT_ID` | no | Account to create the zone under. If unset, auto-detected via `accounts.list()`; required only when the token can see multiple accounts. |
 | `VERCEL_TOKEN` | yes | Vercel access token. |
 | `VERCEL_TEAM_ID` | no | Team/scope ID for team projects. |
 | `VERCEL_PROJECT` | no | Default Vercel project when `--project` is omitted. |
