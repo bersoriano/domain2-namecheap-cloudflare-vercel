@@ -131,3 +131,19 @@ def test_ensure_record_cname_www_fqdn():
     spec = RecordSpec(type="CNAME", name="www", content="cname.vercel-dns.com", proxied=False)
     p.ensure_record("z1", "example.com", spec)
     assert cf.dns.records.created[0]["name"] == "www.example.com"
+
+
+def test_ensure_record_updates_when_proxied_differs():
+    existing = Obj(id="r1", type="A", name="example.com", content="76.76.21.21", proxied=True)
+    cf = FakeCF(FakeZones(), FakeRecords(existing=[existing]))
+    p = CloudflareProvider(make_settings(), client=cf)
+    spec = RecordSpec(type="A", name="@", content="76.76.21.21", proxied=False)
+    assert p.ensure_record("z1", "example.com", spec) == "updated"
+    assert cf.dns.records.updated[0]["proxied"] is False
+
+
+def test_zone_create_zero_accounts_raises():
+    cf = FakeCF(FakeZones(existing=[]), FakeRecords(), accounts=FakeAccounts([]))
+    p = CloudflareProvider(make_settings(), client=cf)  # no explicit account id
+    with pytest.raises(CloudflareProviderError):
+        p.get_or_create_zone("example.com")
