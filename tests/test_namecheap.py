@@ -69,3 +69,44 @@ def test_set_nameservers_exception_wrapped():
     p = NamecheapProvider(make_settings(), client=FakeClient(dns))
     with pytest.raises(NamecheapError):
         p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
+
+
+class RaisingDns:
+    """Fake DNS API whose calls raise a given exception (to exercise error mapping)."""
+    def __init__(self, exc):
+        self._exc = exc
+
+    def get_list(self, domain):
+        raise self._exc
+
+    def set_custom(self, domain, nameservers):
+        raise self._exc
+
+
+def test_set_nameservers_ip_not_whitelisted_is_actionable():
+    dns = RaisingDns(RuntimeError("API Error: 1011150: Invalid request IP: 204.239.251.6"))
+    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    with pytest.raises(NamecheapError) as exc:
+        p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
+    msg = str(exc.value)
+    assert "whitelist" in msg.lower()
+    assert "NAMECHEAP_CLIENT_IP" in msg
+    assert exc.value.cause is not None  # underlying error preserved
+
+
+def test_read_nameservers_domain_not_in_account_is_actionable():
+    dns = RaisingDns(RuntimeError("2019166: Username not available"))
+    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    with pytest.raises(NamecheapError) as exc:
+        p.get_nameservers("notmine.com")
+    msg = str(exc.value)
+    assert "notmine.com" in msg
+    assert "account" in msg.lower()
+
+
+def test_generic_namecheap_error_falls_back():
+    dns = RaisingDns(RuntimeError("some unexpected failure"))
+    p = NamecheapProvider(make_settings(), client=FakeClient(dns))
+    with pytest.raises(NamecheapError) as exc:
+        p.set_nameservers("example.com", ["ns1.cloudflare.com", "ns2.cloudflare.com"])
+    assert "Failed to set nameservers for example.com" in str(exc.value)

@@ -252,3 +252,73 @@ def test_status_reports_attached_and_ns_matching(tmp_path):
     assert names["namecheap-nameservers"] == "skipped"    # NS already match
     assert names["vercel-domain:example.com"] == "skipped"      # attached
     assert names["vercel-domain:www.example.com"] == "skipped"  # attached
+
+
+def test_nameserver_change_confirmed_proceeds(tmp_path):
+    nc = FakeNamecheap(current_ns=["dns1.registrar-servers.com"])
+    calls = []
+
+    def confirm(domain, current, target):
+        calls.append((domain, current, target))
+        return True
+
+    orch = Orchestrator(
+        settings=make_settings(), state_store=StateStore(tmp_path),
+        namecheap=nc, cloudflare=FakeCloudflare(zone_created=False),
+        vercel_factory=lambda project: FakeVercel(),
+        confirm_nameservers=confirm,
+    )
+    report = orch.wire(WirePlan("example.com", "proj", include_www=False, dry_run=False))
+
+    assert calls and calls[0][0] == "example.com"
+    assert calls[0][2] == ["ns1.cloudflare.com", "ns2.cloudflare.com"]  # target shown
+    assert nc.set_calls == [["ns1.cloudflare.com", "ns2.cloudflare.com"]]  # change applied
+    ns_step = next(s for s in report.steps if s.name == "namecheap-nameservers")
+    assert ns_step.status == "updated"
+
+
+def test_nameserver_change_declined_skips_and_continues(tmp_path):
+    nc = FakeNamecheap(current_ns=["dns1.registrar-servers.com"])
+    vc = FakeVercel()
+    orch = Orchestrator(
+        settings=make_settings(), state_store=StateStore(tmp_path),
+        namecheap=nc, cloudflare=FakeCloudflare(zone_created=False),
+        vercel_factory=lambda project: vc,
+        confirm_nameservers=lambda d, c, t: False,
+    )
+    report = orch.wire(WirePlan("example.com", "proj", include_www=False, dry_run=False))
+
+    assert nc.set_calls == []  # nameservers NOT changed
+    ns_step = next(s for s in report.steps if s.name == "namecheap-nameservers")
+    assert ns_step.status == "skipped"
+    assert "declined" in ns_step.detail
+    assert vc.added == ["example.com"]  # flow still completed the benign steps
+
+
+def test_confirm_not_called_when_nameservers_already_correct(tmp_path):
+    nc = FakeNamecheap(current_ns=["ns1.cloudflare.com", "ns2.cloudflare.com"])
+    called = []
+    orch = Orchestrator(
+        settings=make_settings(), state_store=StateStore(tmp_path),
+        namecheap=nc, cloudflare=FakeCloudflare(zone_created=False),
+        vercel_factory=lambda project: FakeVercel(),
+        confirm_nameservers=lambda *a: called.append(a) or True,
+    )
+    orch.wire(WirePlan("example.com", "proj", include_www=False, dry_run=False))
+    assert called == []  # nothing to change -> no prompt
+
+
+def test_render_next_steps_lists_verification_commands():
+    from wire_domain.console import console
+    from wire_domain.flow import render_next_steps
+    from wire_domain.models import StepResult, WireReport
+
+    report = WireReport(domain="example.com")
+    report.add(StepResult("namecheap-nameservers", "updated", "set -> [ns1, ns2]"))
+    with console.capture() as cap:
+        render_next_steps(report, "my-project")
+    out = cap.get()
+    assert "dig +short NS example.com" in out
+    assert "vercel domains inspect example.com" in out
+    assert "wire-domain status example.com --project my-project" in out
+    assert "propagat" in out.lower()  # NS updated -> propagation called out

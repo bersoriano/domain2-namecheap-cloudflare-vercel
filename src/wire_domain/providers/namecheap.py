@@ -20,6 +20,40 @@ def nameservers_equal(a: Iterable[str], b: Iterable[str]) -> bool:
     return {_norm(x) for x in a} == {_norm(x) for x in b}
 
 
+def _namecheap_error(domain: str, action: str, exc: Exception) -> NamecheapError:
+    """Translate a raw Namecheap failure into an actionable NamecheapError.
+
+    Namecheap surfaces failures as text/error-numbers; map the common ones to
+    guidance the user can act on, and fall back to a generic message.
+    """
+    text = str(exc)
+    lowered = text.lower()
+
+    if "1011150" in text or "invalid request ip" in lowered:
+        return NamecheapError(
+            "Namecheap rejected the request because your API client IP is not "
+            "whitelisted. Add your current public IP under Namecheap -> Profile -> "
+            "Tools -> Business & Dev Tools -> API Access -> Whitelisted IPs, and make "
+            "sure NAMECHEAP_CLIENT_IP matches it (whitelist changes take a few "
+            "minutes to apply).",
+            cause=exc,
+        )
+    if "1010900" in text or "api key is invalid" in lowered:
+        return NamecheapError(
+            "Namecheap rejected the API credentials. Confirm API access is enabled "
+            "for the account and that NAMECHEAP_API_KEY / NAMECHEAP_API_USER are correct.",
+            cause=exc,
+        )
+    if any(code in text for code in ("2019166", "2016166", "5019169")) or "not found" in lowered:
+        return NamecheapError(
+            f"Namecheap could not act on '{domain}' - it does not appear to be in "
+            "this account (it may be registered by someone else, or under a different "
+            "Namecheap login). wire-domain only manages domains you already own.",
+            cause=exc,
+        )
+    return NamecheapError(f"Failed to {action} for {domain}", cause=exc)
+
+
 class NamecheapProvider:
     def __init__(self, settings: Settings, client: object | None = None) -> None:
         if client is None:
@@ -39,14 +73,14 @@ class NamecheapProvider:
         try:
             result = self.client.domains.dns.get_list(domain)
         except Exception as exc:  # noqa: BLE001 - normalize all SDK failures
-            raise NamecheapError(f"Failed to read nameservers for {domain}", cause=exc) from exc
+            raise _namecheap_error(domain, "read nameservers", exc) from exc
         return list(result.get("Nameservers") or [])
 
     def set_nameservers(self, domain: str, nameservers: list[str]) -> None:
         try:
             result = self.client.domains.dns.set_custom(domain, nameservers)
         except Exception as exc:  # noqa: BLE001
-            raise NamecheapError(f"Failed to set nameservers for {domain}", cause=exc) from exc
+            raise _namecheap_error(domain, "set nameservers", exc) from exc
         if not result.get("IsSuccess"):
             warning = result.get("Warnings") or "unknown error"
             raise NamecheapError(f"Namecheap rejected nameserver update for {domain}: {warning}")
