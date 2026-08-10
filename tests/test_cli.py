@@ -31,11 +31,6 @@ class FakeOrch:
         return r
 
 
-def patch_env(monkeypatch, env):
-    monkeypatch.setattr(cli_mod, "load_settings", lambda **kw: cli_mod.load_settings.__wrapped__(env=env)
-                        if False else _settings_from(env))
-
-
 def _settings_from(env):
     from wire_domain.config import load_settings
     return load_settings(env=env)

@@ -9,13 +9,7 @@ import typer
 
 from wire_domain.config import load_settings, render_config_table, Settings
 from wire_domain.console import console, err_console
-from wire_domain.errors import (
-    CloudflareProviderError,
-    ConfigError,
-    NamecheapError,
-    VercelError,
-    WireError,
-)
+from wire_domain.errors import ConfigError, WireError
 from wire_domain.flow import Orchestrator, WirePlan, render_report
 from wire_domain.providers.cloudflare import CloudflareProvider
 from wire_domain.providers.namecheap import NamecheapProvider
@@ -28,8 +22,6 @@ _PROPAGATION_NOTE = (
     "Nameserver changes can take minutes to 48 hours to propagate. "
     "The Cloudflare zone stays 'pending' until propagation completes."
 )
-
-_EXIT_FOR = {ConfigError: 1}
 
 
 def build_orchestrator(settings: Settings, state_dir: Path) -> Orchestrator:
@@ -49,7 +41,7 @@ def _exit_code_for(exc: WireError) -> int:
 
 
 def _render_error(exc: WireError, verbose: bool) -> None:
-    if verbose and exc.cause is not None:
+    if verbose:
         err_console.print_exception()
     err_console.print(f"[red]error:[/red] {exc}")
 
