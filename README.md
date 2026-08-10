@@ -156,8 +156,8 @@ flowchart TD
 Requires **Python 3.11+** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/<your-org>/wire-domain.git
-cd wire-domain
+git clone git@github.com:bersoriano/domain2-namecheap-cloudflare-vercel.git
+cd domain2-namecheap-cloudflare-vercel
 uv sync
 ```
 
