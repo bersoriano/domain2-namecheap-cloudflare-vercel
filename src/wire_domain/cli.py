@@ -10,7 +10,7 @@ import typer
 from wire_domain.config import load_settings, render_config_table, Settings
 from wire_domain.console import console, err_console
 from wire_domain.errors import ConfigError, WireError
-from wire_domain.flow import Orchestrator, WirePlan, render_report
+from wire_domain.flow import Orchestrator, WirePlan, render_report, vercel_record_specs
 from wire_domain.providers.cloudflare import CloudflareProvider
 from wire_domain.providers.namecheap import NamecheapProvider
 from wire_domain.providers.vercel import VercelProvider
@@ -65,6 +65,9 @@ def wire(
         render_config_table(settings)
         console.print(f"Wiring [bold]{domain}[/bold] -> Vercel project [bold]{resolved_project}[/bold] "
                       f"({'with' if www else 'without'} www){' [dim](dry-run)[/dim]' if dry_run else ''}")
+        for spec in vercel_record_specs(www):
+            console.print(f"  DNS: {spec.type} {spec.name} -> {spec.content} (proxied={spec.proxied})")
+        console.print("  Nameservers: will be set to the zone's Cloudflare nameservers (resolved during the run)")
 
         if not yes and not dry_run:
             typer.confirm("Proceed?", abort=True)

@@ -92,6 +92,15 @@ uv run wire-domain status example.com --project my-project --verbose
 - `--state-dir PATH` — directory for idempotency state (default: `.wire-domain-state`)
 - `--verbose` — print full tracebacks on error
 
+## DNS Records Created
+
+The following DNS records are created or ensured on Cloudflare:
+
+| Type | Name | Value | Proxied | When |
+|------|------|-------|---------|------|
+| `A` | `@` | `76.76.21.21` | off | always |
+| `CNAME` | `www` | `cname.vercel-dns.com` | off | only with `--www` (default) |
+
 ## Behavior
 
 ### Idempotency

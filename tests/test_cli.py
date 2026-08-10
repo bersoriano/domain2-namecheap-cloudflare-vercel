@@ -67,6 +67,15 @@ def test_wire_missing_project_exit_1(monkeypatch, tmp_path):
     assert "project" in result.output.lower()
 
 
+def test_wire_preflight_lists_dns_records(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli_mod, "load_settings", lambda **kw: _settings_from({**ENV, "VERCEL_PROJECT": "proj"}))
+    monkeypatch.setattr(cli_mod, "build_orchestrator", lambda settings, state_dir: FakeOrch(ok=True))
+    result = runner.invoke(app, ["wire", "example.com", "--yes", "--state-dir", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "76.76.21.21" in result.output
+    assert "cname.vercel-dns.com" in result.output
+
+
 def test_status_exit_0(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_mod, "load_settings", lambda **kw: _settings_from({**ENV, "VERCEL_PROJECT": "proj"}))
     monkeypatch.setattr(cli_mod, "build_orchestrator", lambda settings, state_dir: FakeOrch())
