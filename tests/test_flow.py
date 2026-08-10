@@ -25,11 +25,18 @@ class FakeZoneInfo:
 
 
 class FakeCloudflare:
-    def __init__(self, zone_created=True):
+    def __init__(self, zone_created=True, zone_exists=True):
         self._zone_created = zone_created
+        self._zone_exists = zone_exists
         self.records = []
+        self.get_or_create_calls = 0
+
+    def get_zone(self, domain):
+        # Read-only lookup. Returns an existing zone or None.
+        return FakeZoneInfo(created=False) if self._zone_exists else None
 
     def get_or_create_zone(self, domain):
+        self.get_or_create_calls += 1
         return FakeZoneInfo(self._zone_created)
 
     def ensure_record(self, zone_id, zone_name, spec: RecordSpec):
@@ -135,6 +142,71 @@ def test_wire_dry_run_performs_no_writes(tmp_path):
     assert cf.records == []
     assert vc.added == []
     assert report.ok is True
+
+
+def test_dry_run_missing_zone_does_not_create(tmp_path):
+    # A dry run must never create a Cloudflare zone. If none exists yet, the
+    # whole plan is a pending preview and get_or_create_zone is not called.
+    nc = FakeNamecheap(current_ns=[])
+    cf = FakeCloudflare(zone_exists=False)  # get_zone -> None
+    vc = FakeVercel()
+    orch = build(tmp_path, nc, cf, vc)
+    report = orch.wire(WirePlan("example.com", "proj", include_www=True, dry_run=True))
+
+    assert cf.get_or_create_calls == 0          # never created
+    assert nc.set_calls == []                    # no writes anywhere
+    assert cf.records == []
+    assert vc.added == []
+    assert not (tmp_path / "example.com.json").exists()  # no state persisted
+    assert report.ok is True
+    assert all(s.status == "pending" for s in report.steps)
+    zone_step = next(s for s in report.steps if s.name == "cloudflare-zone")
+    assert zone_step.status == "pending"
+
+
+def test_dry_run_existing_zone_reuses_without_create(tmp_path):
+    nc = FakeNamecheap(current_ns=["dns1.registrar-servers.com"])
+    cf = FakeCloudflare(zone_exists=True)  # get_zone -> existing zone
+    vc = FakeVercel()
+    orch = build(tmp_path, nc, cf, vc)
+    report = orch.wire(WirePlan("example.com", "proj", include_www=True, dry_run=True))
+
+    assert cf.get_or_create_calls == 0                    # reused, not created
+    assert not (tmp_path / "example.com.json").exists()   # no state persisted
+    zone_step = next(s for s in report.steps if s.name == "cloudflare-zone")
+    assert zone_step.status == "skipped"
+
+
+def test_failed_step_detail_includes_cause(tmp_path):
+    from wire_domain.errors import CloudflareProviderError
+
+    class BoomCF(FakeCloudflare):
+        def get_or_create_zone(self, domain):
+            raise CloudflareProviderError(
+                "Failed to create zone for example.com",
+                cause=RuntimeError("403 insufficient permissions"),
+            )
+
+    orch = build(tmp_path, FakeNamecheap([]), BoomCF(), FakeVercel())
+    report = orch.wire(WirePlan("example.com", "proj", include_www=True, dry_run=False))
+    failed = report.steps[0]
+    assert failed.status == "failed"
+    assert "Failed to create zone" in failed.detail
+    assert "403 insufficient permissions" in failed.detail  # underlying cause surfaced
+
+
+def test_render_report_does_not_emoji_mangle_step_names():
+    from wire_domain.console import console
+    from wire_domain.flow import render_report
+    from wire_domain.models import StepResult, WireReport
+
+    report = WireReport(domain="example.com")
+    report.add(StepResult("cloudflare-record:A:@", "pending", "would ensure 76.76.21.21"))
+    with console.capture() as cap:
+        render_report(report)
+    out = cap.get()
+    assert "🅰" not in out           # ":A:" must not become an emoji
+    assert "cloudflare-record" in out
 
 
 def test_wire_failure_stops_and_marks_failed(tmp_path):
